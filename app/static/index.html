@@ -39,16 +39,26 @@
         </div>
         <div class="toolbar-right">
           <button id="reimport-btn">重新导入</button>
+          <button id="merge-btn">合并两条</button>
           <button id="download-btn" class="primary" disabled>下载纯文本</button>
         </div>
       </div>
 
       <div id="broken-banner" class="panel banner" hidden></div>
 
+      <div id="merge-banner" class="panel merge-banner" hidden>
+        <strong>合并模式</strong>
+        <span id="merge-hint"></span>
+        <span class="merge-banner-actions">
+          <button id="merge-confirm-btn" class="primary" disabled>合并所选两条</button>
+          <button id="merge-cancel-btn">取消</button>
+        </span>
+      </div>
+
       <div class="columns">
         <div class="panel">
           <h2>条款列表</h2>
-          <p class="hint">用 ↑↓ 或拖拽 ⠿ 调整顺序；编号为当前显示编号，引用始终指向导入时绑定的条款。</p>
+          <p class="hint">用 ↑↓ 或拖拽 ⠿ 调整顺序；编号为当前显示编号，引用始终指向导入时绑定的条款。点「合并两条」选择两条不同条款，可按显示顺序合并为一条。</p>
           <ol id="clause-list" class="clause-list"></ol>
         </div>
 

@@ -7,6 +7,9 @@
   因此之后无论怎样重排，引用都不会转指占用旧号的条款。
 - 被引用条款被删除后，其 id 仍留在引用处，预览解析为失效引用（[[原X?]]），
   修复前导出接口返回 409，前端禁止下载。
+- 合并两条条款时，按当前显示顺序用全角分号连接正文，合并结果沿用较前条款的
+  稳定 id；原指向较后条款的引用（含两条正文内部的）一律改指合并结果，
+  合并前已失效的引用保持失效。
 """
 
 from __future__ import annotations
@@ -56,6 +59,12 @@ class SaveIn(BaseModel):
     clauses: list[ClauseIn]
     edit_id: str
     text: str  # 编辑器中的正文（数字引用）
+
+
+class MergeIn(BaseModel):
+    order_ids: list[str]
+    clauses: list[ClauseIn]
+    pick_ids: list[str]  # 待合并的两条（顺序不限，按 order_ids 中的显示位置定先后）
 
 
 # --------------------------------------------------------------------------- #
@@ -255,6 +264,61 @@ def save_clause(payload: SaveIn):
 
     internal = MARKER_RE.sub(bind, text)
     return {"id": payload.edit_id, "body": internal}
+
+
+@app.post("/api/merge")
+def merge_clauses(payload: MergeIn):
+    """合并两条条款。
+
+    - 必须选两条现存且不同的条款；按它们在 order_ids 中的位置确定前/后。
+    - 合并后正文 = 较前正文 + 全角分号 + 较后正文，沿用较前条款的 id 与位置，
+      较后条款从列表与正文中移除，其余条款相对顺序不变。
+    - 所有指向较后 id 的引用（含两条待合并正文内部的）改指较前 id；
+      其他引用不动，合并前已失效（id 不在草稿中）的引用保持失效。
+    """
+    by_id = _validate_state(payload.order_ids, payload.clauses)
+
+    errors: list[str] = []
+    if len(payload.pick_ids) != 2:
+        errors.append("请恰好选择两条条款进行合并")
+    if len(set(payload.pick_ids)) != len(payload.pick_ids):
+        errors.append("合并必须选择两条不同的条款")
+    for pick in payload.pick_ids:
+        if pick not in by_id:
+            errors.append(f"被选择的条款不存在：{pick}")
+    if errors:
+        raise HTTPException(422, detail={"errors": errors})
+
+    first_pick, second_pick = payload.pick_ids
+    first_pos = payload.order_ids.index(first_pick)
+    second_pos = payload.order_ids.index(second_pick)
+    if first_pos > second_pos:
+        # 以显示顺序为准：较前者在前
+        first_pick, second_pick = second_pick, first_pick
+
+    first = by_id[first_pick]
+    second = by_id[second_pick]
+    later_marker = f"[[{second_pick}]]"
+
+    def retarget(body: str) -> str:
+        return body.replace(later_marker, f"[[{first_pick}]]")
+
+    merged_body = f"{retarget(first.body)}；{retarget(second.body)}"
+    clauses_out = [
+        {
+            "id": clause_id,
+            "body": merged_body if clause_id == first_pick else retarget(by_id[clause_id].body),
+        }
+        for clause_id in payload.order_ids
+        if clause_id != second_pick
+    ]
+    order_out = [clause_id for clause_id in payload.order_ids if clause_id != second_pick]
+    return {
+        "order_ids": order_out,
+        "clauses": clauses_out,
+        "merged_id": first_pick,
+        "removed_id": second_pick,
+    }
 
 
 @app.post("/api/preview")

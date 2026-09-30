@@ -9,6 +9,8 @@ const state = {
   editingId: null,
   preview: null, // 服务端 /api/preview 返回
   dragId: null,
+  mergeMode: false,
+  mergePicks: [], // 合并模式下已选条款 id（最多两条）
 };
 
 const MARKER = /\[\[(?:原(\d+)\?|(\d+))\]\]/g; // 预览文本中的引用形态
@@ -25,6 +27,11 @@ const brokenBanner = $("#broken-banner");
 const downloadBtn = $("#download-btn");
 const statCount = $("#stat-count");
 const statBroken = $("#stat-broken");
+const mergeBtn = $("#merge-btn");
+const mergeBanner = $("#merge-banner");
+const mergeHint = $("#merge-hint");
+const mergeConfirmBtn = $("#merge-confirm-btn");
+const mergeCancelBtn = $("#merge-cancel-btn");
 
 // --------------------------------------------------------------------------- //
 // 工具
@@ -102,6 +109,8 @@ $("#reimport-btn").addEventListener("click", () => {
   state.orderIds = [];
   state.editingId = null;
   state.preview = null;
+  state.mergeMode = false;
+  state.mergePicks = [];
   desk.hidden = true;
   importPanel.hidden = false;
 });
@@ -138,25 +147,34 @@ async function render() {
     li.dataset.id = item.id;
 
     const isEditing = state.editingId === item.id;
+    const isPicked = state.mergePicks.includes(item.id);
+    if (isPicked) li.classList.add("picked");
+    const busy = state.editingId || state.mergeMode;
     li.innerHTML = `
       <div class="card-head">
-        <span class="grip" title="拖拽调整顺序">⠿</span>
+        ${
+          state.mergeMode
+            ? `<input type="checkbox" class="merge-check" data-action="pick" ${
+                isPicked ? "checked" : ""
+              } ${state.mergePicks.length >= 2 && !isPicked ? "disabled" : ""} aria-label="选择本条用于合并" />`
+            : '<span class="grip" title="拖拽调整顺序">⠿</span>'
+        }
         <span class="num">${item.display}</span>
         <span class="orig">（原第 ${item.original} 条）</span>
         ${item.broken.length ? '<span class="warn-tag">含失效引用</span>' : ""}
         <span class="card-actions">
           ${
-            isEditing
+            isEditing || state.mergeMode
               ? ""
               : `<button data-action="up" ${
-                  item.display === 1 || state.editingId ? "disabled" : ""
+                  item.display === 1 || busy ? "disabled" : ""
                 }>↑</button>
                  <button data-action="down" ${
-                   item.display === data.items.length || state.editingId ? "disabled" : ""
+                   item.display === data.items.length || busy ? "disabled" : ""
                  }>↓</button>
-                 <button data-action="edit" ${state.editingId ? "disabled" : ""}>编辑正文</button>
+                 <button data-action="edit" ${busy ? "disabled" : ""}>编辑正文</button>
                  <button data-action="delete" class="danger" ${
-                   state.editingId ? "disabled" : ""
+                   busy ? "disabled" : ""
                  }>删除</button>`
           }
         </span>
@@ -171,6 +189,7 @@ async function render() {
   statBroken.hidden = brokenTotal === 0;
   statBroken.textContent = `${brokenTotal} 处失效引用`;
   downloadBtn.disabled = data.has_broken;
+  syncMergeUi(data.items.length);
 
   // 失效引用横幅
   if (brokenLines.length) {
@@ -244,10 +263,16 @@ clauseList.addEventListener("click", async (ev) => {
   }
 
   const btn = ev.target.closest("[data-action]");
-  if (!btn) return;
-  const card = btn.closest(".card");
-  const id = card.dataset.id;
-  const action = btn.dataset.action;
+  const card = btn ? btn.closest(".card") : ev.target.closest(".card");
+  const id = card ? card.dataset.id : null;
+  const action = btn ? btn.dataset.action : null;
+
+  // 合并模式：只允许选条款；引用跳转已在上面处理，重排/编辑/删除全部停用
+  if (state.mergeMode) {
+    if (["up", "down", "edit", "delete"].includes(action)) return;
+    if (id) toggleMergePick(id);
+    return;
+  }
 
   if (["up", "down", "edit", "delete"].includes(action) && state.editingId) return;
 
@@ -312,11 +337,102 @@ async function saveEdit(id) {
 }
 
 // --------------------------------------------------------------------------- //
+// 合并两条条款
+// --------------------------------------------------------------------------- //
+function syncMergeUi(total) {
+  mergeBtn.disabled = Boolean(state.editingId) || total < 2;
+  mergeBanner.hidden = !state.mergeMode;
+  if (!state.mergeMode) return;
+  const n = state.mergePicks.length;
+  const pos = (cid) => state.orderIds.indexOf(cid) + 1;
+  mergeHint.textContent =
+    n === 0
+      ? "请点选两条要合并的条款（按当前显示顺序，用全角分号“；”连接正文）。"
+      : n === 1
+        ? `已选第 ${pos(state.mergePicks[0])} 条，再选一条。`
+        : `已选第 ${pos(state.mergePicks[0])} 条与第 ${pos(state.mergePicks[1])} 条：前者保留位置与身份，后者并入后移除。`;
+  mergeConfirmBtn.disabled = n !== 2;
+}
+
+function toggleMergePick(id) {
+  const i = state.mergePicks.indexOf(id);
+  if (i >= 0) {
+    state.mergePicks.splice(i, 1);
+  } else {
+    if (state.mergePicks.length >= 2) return; // 最多两条
+    state.mergePicks.push(id);
+  }
+  render();
+}
+
+function exitMergeMode() {
+  state.mergeMode = false;
+  state.mergePicks = [];
+  render();
+}
+
+mergeBtn.addEventListener("click", () => {
+  if (state.editingId || state.clauses.length < 2) return;
+  state.mergeMode = true;
+  state.mergePicks = [];
+  render();
+});
+mergeCancelBtn.addEventListener("click", exitMergeMode);
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && state.mergeMode && !state.editingId) exitMergeMode();
+});
+
+mergeConfirmBtn.addEventListener("click", async () => {
+  if (state.mergePicks.length !== 2) return;
+  const pos = (cid) => state.orderIds.indexOf(cid) + 1;
+  const [a, b] = state.mergePicks;
+  const first = pos(a) < pos(b) ? a : b;
+  const second = pos(a) < pos(b) ? b : a;
+  const ok = confirm(
+    `将把第 ${pos(second)} 条并入第 ${pos(first)} 条：\n` +
+      `· 正文按显示顺序用全角分号“；”连接，沿用第 ${pos(first)} 条的位置与身份；\n` +
+      `· 第 ${pos(second)} 条移除，其余条款顺序不变；\n` +
+      `· 所有原指向第 ${pos(second)} 条的引用（含这两条正文内的）改指合并结果；其他引用与已失效引用不变。\n\n` +
+      `此操作在重新导入或刷新前不可撤销，确定合并？`,
+  );
+  if (!ok) return;
+
+  let data;
+  try {
+    data = await api("/api/merge", { ...snapshot(), pick_ids: [first, second] });
+  } catch (e) {
+    // 操作失败：草稿保持不变，仅提示
+    alert("合并失败，草稿未改动：\n" + e.errors.join("\n"));
+    return;
+  }
+  // 成功后原子替换为服务端返回的同一份草稿，列表/预览/下载状态立即一致
+  state.orderIds = data.order_ids;
+  state.clauses = data.clauses.map((c) => ({
+    id: c.id,
+    original: parseInt(c.id.slice(1), 10),
+    body: c.body,
+  }));
+  state.mergeMode = false;
+  state.mergePicks = [];
+  state.editingId = null;
+  await render();
+  const card = document.getElementById(`card-${data.merged_id}`);
+  if (card) {
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    card.classList.remove("flash");
+    void card.offsetWidth;
+    card.classList.add("flash");
+  }
+});
+
+// --------------------------------------------------------------------------- //
 // 拖拽重排
 // --------------------------------------------------------------------------- //
 function attachDnd() {
+  if (state.mergeMode) return; // 合并模式不渲染 grip，也不允许拖拽
   for (const card of clauseList.querySelectorAll(".card")) {
     const grip = card.querySelector(".grip");
+    if (!grip) continue;
     grip.addEventListener("mousedown", () => {
       if (!state.editingId) card.draggable = true;
     });
